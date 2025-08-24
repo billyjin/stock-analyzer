@@ -18,13 +18,8 @@ from sklearn.preprocessing import StandardScaler
 import time
 warnings.filterwarnings('ignore')
 
-# FinanceDataReader 임포트 (대체 데이터 소스)
-try:
-    import FinanceDataReader as fdr
-    FDR_AVAILABLE = True
-except ImportError:
-    FDR_AVAILABLE = False
-    st.warning("⚠️ FinanceDataReader가 설치되지 않았습니다. pip install FinanceDataReader로 설치하세요.")
+# yfinance만 사용 (안정성을 위해)
+FDR_AVAILABLE = False
 
 # 페이지 설정
 st.set_page_config(
@@ -240,35 +235,7 @@ def fetch_stock_data_full(ticker, period='max'):
     except Exception as e:
         st.warning(f"⚠️ {clean_ticker}: Yahoo Finance 오류 - {str(e)}")
     
-    # 2차 시도: FinanceDataReader (FDR)
-    if FDR_AVAILABLE:
-        try:
-            # FDR은 기간을 datetime으로 받음
-            if period == 'max':
-                start_date = '1990-01-01'
-            elif period == '10y':
-                start_date = (datetime.now() - timedelta(days=365*10)).strftime('%Y-%m-%d')
-            elif period == '5y':
-                start_date = (datetime.now() - timedelta(days=365*5)).strftime('%Y-%m-%d')
-            elif period == '2y':
-                start_date = (datetime.now() - timedelta(days=365*2)).strftime('%Y-%m-%d')
-            elif period == '1y':
-                start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-            else:
-                start_date = '1990-01-01'
-            
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            
-            # FDR로 데이터 시도
-            data = fdr.DataReader(clean_ticker, start_date, end_date)
-            
-            if not data.empty and len(data) > 0 and 'Close' in data.columns:
-                if not data['Close'].isna().all():
-                    st.info(f"✅ {clean_ticker}: FinanceDataReader로 데이터 수집 성공")
-                    return data
-        except Exception as e:
-            st.warning(f"⚠️ {clean_ticker}: FinanceDataReader 오류 - {str(e)}")
-    
+    # 2차 시도: FinanceDataReader 제거됨 (안정성을 위해 yfinance만 사용)
     # 3차 시도: 특정 티커 변환 시도 (CNHI 같은 경우)
     try:
         # 일부 티커는 다른 거래소나 형식으로 시도
