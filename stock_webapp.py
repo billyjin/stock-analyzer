@@ -515,11 +515,11 @@ def create_plotly_chart(data, title, y_label, chart_type="실주가", show_legen
             if is_highlighted:
                 line_color = highlight_colors[i % len(highlight_colors)]
                 line_width = 2
-                opacity = 1.0
+                opacity = 0.9  # 하이라이트된 라인들을 약간 덜 진하게
             else:
                 line_color = colors[i % len(colors)]
                 line_width = 1
-                opacity = 0.7 if highlight_tickers else 1.0  # 하이라이트가 있으면 다른 라인들을 약간만 흐리게
+                opacity = 0.8 if highlight_tickers else 1.0  # 비하이라이트 라인들을 더 잘 보이게
             
             # Legend 상태에 따른 visibility 설정
             if legend_state == 'all_visible':
