@@ -519,7 +519,7 @@ def create_plotly_chart(data, title, y_label, chart_type="실주가", show_legen
             else:
                 line_color = colors[i % len(colors)]
                 line_width = 1
-                opacity = 0.3 if highlight_tickers else 1.0  # 하이라이트가 있으면 다른 라인들은 흐리게
+                opacity = 0.7 if highlight_tickers else 1.0  # 하이라이트가 있으면 다른 라인들을 약간만 흐리게
             
             # Legend 상태에 따른 visibility 설정
             if legend_state == 'all_visible':
@@ -527,7 +527,7 @@ def create_plotly_chart(data, title, y_label, chart_type="실주가", show_legen
             elif legend_state == 'all_hidden':
                 visible = 'legendonly'
             elif highlight_tickers:
-                # 하이라이트 모드인 경우
+                # 하이라이트 모드인 경우 - 비하이라이트 라인들도 legend에서 선택 가능하도록
                 visible = True if is_highlighted else 'legendonly'
             else:
                 visible = True  # 기본값
@@ -1365,7 +1365,7 @@ def main():
     
     # 정보 패널
     st.markdown("---")
-    with st.expander("ℹ️ 사용법 및 정보"):
+    with st.expander("ℹ️ 도움말"):
         st.markdown("""
         ### 📖 사용법
         
