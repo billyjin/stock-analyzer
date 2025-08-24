@@ -514,11 +514,11 @@ def create_plotly_chart(data, title, y_label, chart_type="실주가", show_legen
             # 색상 및 선 굵기 설정
             if is_highlighted:
                 line_color = highlight_colors[i % len(highlight_colors)]
-                line_width = 4
+                line_width = 2
                 opacity = 1.0
             else:
                 line_color = colors[i % len(colors)]
-                line_width = 2
+                line_width = 1
                 opacity = 0.3 if highlight_tickers else 1.0  # 하이라이트가 있으면 다른 라인들은 흐리게
             
             # Legend 상태에 따른 visibility 설정
@@ -1143,52 +1143,57 @@ def main():
                 selected_stocks_in_cluster = cluster_options[cluster_idx][1]
                 cluster_info = cluster_options[cluster_idx][2]
                 
-                # 세션 상태 즉시 업데이트
-                st.session_state['highlight_tickers'] = selected_stocks_in_cluster
-                st.session_state['selected_cluster'] = selected_cluster
+                # 세션 상태 변경 체크 및 즉시 업데이트
+                if st.session_state.get('selected_cluster') != selected_cluster:
+                    st.session_state['highlight_tickers'] = selected_stocks_in_cluster
+                    st.session_state['selected_cluster'] = selected_cluster
+                    st.rerun()
                 
                 st.info(f"📌 선택된 그룹: {', '.join(selected_stocks_in_cluster)}")
                 # 그룹 내 상세 정보 표시
-                with st.expander("📋 그룹 내 주식 상세 정보", expanded=False):
-                    # 데이터프레임으로 깔끔하게 표시
-                    group_data = []
-                    for stock in cluster_info['stocks']:
-                        company_name = ALL_STOCKS.get(stock['ticker'], stock['ticker'])
-                        group_data.append({
-                            '티커': stock['ticker'],
-                            '회사명': company_name,
-                            '전체 수익률(%)': f"{stock['total_return']:.1f}",
-                            '연간 수익률(%)': f"{stock['annual_return']:.1f}",
-                            '분기 수익률(%)': f"{stock['quarterly_return']:.1f}"
-                        })
-                    
-                    group_df = pd.DataFrame(group_data)
-                    st.dataframe(
-                        group_df, 
-                        use_container_width=True, 
-                        hide_index=True,
-                        column_config={
-                            "전체 수익률(%)": st.column_config.NumberColumn(
-                                "전체 수익률(%)",
-                                help="전체 기간 수익률",
-                                format="%.1f"
-                            ),
-                            "연간 수익률(%)": st.column_config.NumberColumn(
-                                "연간 수익률(%)",
-                                help="연환산 수익률", 
-                                format="%.1f"
-                            ),
-                            "분기 수익률(%)": st.column_config.NumberColumn(
-                                "분기 수익률(%)",
-                                help="최근 3개월 수익률",
-                                format="%.1f"
-                            )
-                        }
-                    )
+                st.markdown("**📊 그룹 상세 정보:**")
+                # 데이터프레임으로 깔끔하게 표시
+                group_data = []
+                for stock in cluster_info['stocks']:
+                    company_name = ALL_STOCKS.get(stock['ticker'], stock['ticker'])
+                    group_data.append({
+                        '티커': stock['ticker'],
+                        '회사명': company_name,
+                        '전체 수익률(%)': f"{stock['total_return']:.1f}",
+                        '연간 수익률(%)': f"{stock['annual_return']:.1f}",
+                        '분기 수익률(%)': f"{stock['quarterly_return']:.1f}"
+                    })
+                
+                group_df = pd.DataFrame(group_data)
+                st.dataframe(
+                    group_df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    height=150,  # 높이 제한으로 공간 절약
+                    column_config={
+                        "전체 수익률(%)": st.column_config.NumberColumn(
+                            "전체 수익률(%)",
+                            help="전체 기간 수익률",
+                            format="%.1f"
+                        ),
+                        "연간 수익률(%)": st.column_config.NumberColumn(
+                            "연간 수익률(%)",
+                            help="연환산 수익률", 
+                            format="%.1f"
+                        ),
+                        "분기 수익률(%)": st.column_config.NumberColumn(
+                            "분기 수익률(%)",
+                            help="최근 3개월 수익률",
+                            format="%.1f"
+                        )
+                    }
+                )
             else:
                 # 전체 선택 시 하이라이트 해제
-                st.session_state['highlight_tickers'] = None
-                st.session_state['selected_cluster'] = "전체"
+                if st.session_state.get('selected_cluster') != "전체":
+                    st.session_state['highlight_tickers'] = None
+                    st.session_state['selected_cluster'] = "전체"
+                    st.rerun()
         else:
             st.info("클러스터링을 위해서는 최소 2개 이상의 주식이 필요합니다.")
             st.session_state['highlight_tickers'] = None
