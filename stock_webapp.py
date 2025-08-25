@@ -16,6 +16,7 @@ from plotly.subplots import make_subplots
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import time
+import os
 warnings.filterwarnings('ignore')
 
 # yfinance만 사용 (안정성을 위해)
@@ -23,8 +24,8 @@ FDR_AVAILABLE = False
 
 # 페이지 설정
 st.set_page_config(
-    page_title="S&P 400 주식 분석기",
-    page_icon="📈",
+    page_title="통합 금융 분석기",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -775,7 +776,295 @@ def display_performance_metrics(stock_data):
     
     return df
 
-def main():
+# ================== 매크로 경제 데이터 분석 함수들 ==================
+
+@st.cache_data(ttl=3600)  # 1시간 캐시
+def load_macro_data():
+    """Excel 파일에서 매크로 경제 데이터를 로드합니다."""
+    try:
+        if not os.path.exists('macro_data_trimmed.xlsx'):
+            st.error("❌ macro_data_trimmed.xlsx 파일을 찾을 수 없습니다.")
+            return None, None
+        
+        # Raw_month_USD scale 시트 (0~1 스케일된 데이터)
+        scaled_data = pd.read_excel('macro_data_trimmed.xlsx', sheet_name='Raw_month_USD scale')
+        
+        # Raw_month_USD base 시트 (원본 값 데이터)
+        base_data = pd.read_excel('macro_data_trimmed.xlsx', sheet_name='Raw_month_USD base')
+        
+        # 인덱스를 날짜로 설정 (첫 번째 열이 날짜라고 가정)
+        if scaled_data.columns[0] in ['Date', 'date', 'DATE']:
+            scaled_data.set_index(scaled_data.columns[0], inplace=True)
+            base_data.set_index(base_data.columns[0], inplace=True)
+        else:
+            # 첫 번째 열을 날짜로 가정
+            scaled_data.set_index(scaled_data.columns[0], inplace=True)
+            base_data.set_index(base_data.columns[0], inplace=True)
+        
+        # 인덱스를 datetime으로 변환
+        scaled_data.index = pd.to_datetime(scaled_data.index)
+        base_data.index = pd.to_datetime(base_data.index)
+        
+        return scaled_data, base_data
+        
+    except Exception as e:
+        st.error(f"❌ 데이터 로드 오류: {str(e)}")
+        return None, None
+
+def create_macro_timeseries_chart(data, features, title, chart_type="원본값"):
+    """매크로 경제 지표의 시계열 차트를 생성합니다."""
+    if data is None or data.empty:
+        st.warning("표시할 데이터가 없습니다.")
+        return None
+    
+    fig = go.Figure()
+    
+    # 색상 팔레트
+    colors = px.colors.qualitative.Set3
+    
+    for i, feature in enumerate(features):
+        if feature in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data[feature],
+                mode='lines',
+                name=feature,
+                line=dict(color=colors[i % len(colors)], width=2),
+                hovertemplate=f'<b>{feature}</b><br>' +
+                             'Date: %{x}<br>' +
+                             'Value: %{y:.4f}<extra></extra>'
+            ))
+    
+    fig.update_layout(
+        title=dict(
+            text=title,
+            x=0.5,
+            font=dict(size=16, family="Arial Black")
+        ),
+        xaxis_title="날짜",
+        yaxis_title="값" if chart_type == "원본값" else "스케일된 값 (0-1)",
+        hovermode='x unified',
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        height=500,
+        template="plotly_white"
+    )
+    
+    # 스케일된 데이터인 경우 Y축 범위 설정
+    if chart_type == "스케일값":
+        fig.update_yaxes(range=[-0.05, 1.05])
+        # 참조선 추가
+        fig.add_hline(y=0, line_dash="dash", line_color="red", opacity=0.5)
+        fig.add_hline(y=1, line_dash="dash", line_color="green", opacity=0.5)
+        fig.add_hline(y=0.5, line_dash="dot", line_color="gray", opacity=0.3)
+    
+    return fig
+
+def macro_analysis_page():
+    """매크로 경제 분석 페이지"""
+    st.title("📊 매크로 경제 지표 분석")
+    st.markdown("**시계열 데이터 분석** | Excel 데이터 기반 매크로 경제 트렌드")
+    
+    # 데이터 로드
+    scaled_data, base_data = load_macro_data()
+    
+    if scaled_data is None or base_data is None:
+        st.error("데이터를 로드할 수 없습니다. macro_data_trimmed.xlsx 파일을 확인해주세요.")
+        return
+    
+    # 사이드바 설정
+    st.sidebar.header("📊 분석 설정")
+    
+    # 데이터 유형 선택
+    data_type = st.sidebar.radio(
+        "데이터 유형:",
+        ["원본값 (Raw)", "스케일값 (0-1)"],
+        help="원본값: 실제 경제지표 값, 스케일값: 0-1로 정규화된 값"
+    )
+    
+    current_data = base_data if data_type == "원본값 (Raw)" else scaled_data
+    
+    # 지표 선택
+    available_features = list(current_data.columns)
+    
+    st.sidebar.subheader("📈 분석할 지표 선택")
+    
+    # 전체 선택/해제 버튼
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🔘 전체 선택"):
+            st.session_state['selected_features'] = available_features
+    with col2:
+        if st.button("⭕ 전체 해제"):
+            st.session_state['selected_features'] = []
+    
+    # 초기값 설정
+    if 'selected_features' not in st.session_state:
+        st.session_state['selected_features'] = available_features[:5]  # 처음 5개만 선택
+    
+    selected_features = st.sidebar.multiselect(
+        "경제 지표 선택:",
+        available_features,
+        default=st.session_state.get('selected_features', available_features[:5]),
+        help="분석하고 싶은 경제 지표들을 선택하세요"
+    )
+    
+    # 날짜 범위 설정
+    st.sidebar.subheader("📅 분석 기간")
+    min_date = current_data.index.min().date()
+    max_date = current_data.index.max().date()
+    
+    start_date = st.sidebar.date_input(
+        "시작일:",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    end_date = st.sidebar.date_input(
+        "종료일:",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    # 데이터 필터링
+    mask = (current_data.index.date >= start_date) & (current_data.index.date <= end_date)
+    filtered_data = current_data.loc[mask]
+    
+    if selected_features:
+        # 메인 컨텐츠 영역
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            # 전체 지표 통합 차트
+            if len(selected_features) > 0:
+                chart_title = f"📈 매크로 경제 지표 시계열 분석 ({data_type})"
+                chart_type = "스케일값" if data_type == "스케일값 (0-1)" else "원본값"
+                
+                fig = create_macro_timeseries_chart(
+                    filtered_data, 
+                    selected_features, 
+                    chart_title,
+                    chart_type
+                )
+                
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # 통계 정보
+            st.subheader("📊 기본 통계")
+            
+            stats_data = filtered_data[selected_features].describe()
+            st.dataframe(
+                stats_data.round(4),
+                use_container_width=True,
+                height=300
+            )
+            
+            # 상관관계 매트릭스
+            if len(selected_features) > 1:
+                st.subheader("🔄 상관관계")
+                corr_matrix = filtered_data[selected_features].corr()
+                
+                fig_corr = px.imshow(
+                    corr_matrix,
+                    text_auto=True,
+                    aspect="auto",
+                    color_continuous_scale="RdBu_r",
+                    title="상관관계 매트릭스"
+                )
+                fig_corr.update_layout(height=400)
+                st.plotly_chart(fig_corr, use_container_width=True)
+        
+        # 개별 지표 상세 분석
+        if st.checkbox("📋 개별 지표 상세 분석", value=False):
+            st.markdown("---")
+            st.subheader("📋 개별 지표 상세 분석")
+            
+            # 지표별 개별 차트 (2열로 배치)
+            cols = st.columns(2)
+            
+            for i, feature in enumerate(selected_features):
+                with cols[i % 2]:
+                    # 개별 차트
+                    individual_fig = create_macro_timeseries_chart(
+                        filtered_data, 
+                        [feature], 
+                        f"📊 {feature}",
+                        chart_type
+                    )
+                    
+                    if individual_fig:
+                        st.plotly_chart(individual_fig, use_container_width=True)
+                    
+                    # 기본 통계
+                    feature_stats = filtered_data[feature].describe()
+                    st.write(f"**{feature} 통계:**")
+                    stat_cols = st.columns(3)
+                    with stat_cols[0]:
+                        st.metric("평균", f"{feature_stats['mean']:.4f}")
+                    with stat_cols[1]:
+                        st.metric("표준편차", f"{feature_stats['std']:.4f}")
+                    with stat_cols[2]:
+                        st.metric("최신값", f"{filtered_data[feature].iloc[-1]:.4f}")
+        
+        # 데이터 테이블
+        if st.checkbox("📊 원본 데이터 보기", value=False):
+            st.markdown("---")
+            st.subheader("📊 원본 데이터")
+            
+            # 최신 데이터부터 표시
+            display_data = filtered_data[selected_features].sort_index(ascending=False)
+            st.dataframe(
+                display_data,
+                use_container_width=True,
+                height=400
+            )
+            
+            # 데이터 다운로드
+            csv = display_data.to_csv().encode('utf-8')
+            st.download_button(
+                label="📥 CSV 다운로드",
+                data=csv,
+                file_name=f"macro_data_{data_type}_{start_date}_{end_date}.csv",
+                mime="text/csv"
+            )
+    
+    else:
+        st.warning("분석할 경제 지표를 선택해주세요.")
+    
+    # 정보 패널
+    st.markdown("---")
+    with st.expander("ℹ️ 매크로 데이터 정보"):
+        st.markdown("""
+        ### 📖 매크로 경제 지표 분석 도구
+        
+        **데이터 소스**: macro_data_trimmed.xlsx
+        - **Raw_month_USD base**: 원본 경제지표 값
+        - **Raw_month_USD scale**: 0-1로 정규화된 값 (비교 분석 용이)
+        
+        ### 🔧 주요 기능
+        - **시계열 분석**: 각 경제지표의 시간별 변화 추이
+        - **상관관계 분석**: 지표 간 상호 연관성 분석
+        - **정규화 비교**: 스케일이 다른 지표들의 트렌드 비교
+        - **통계 분석**: 기본 통계량 및 변동성 분석
+        
+        ### 💡 활용 팁
+        - **스케일값**: 서로 다른 단위의 지표들을 동일한 기준으로 비교
+        - **상관관계**: 경제지표 간의 연관성을 파악하여 트렌드 예측
+        - **개별 분석**: 특정 지표의 상세한 변화 패턴 분석
+        """)
+
+def stock_analysis_page():
+    """기존 주식 분석 페이지"""
     # 메인 타이틀
     st.title("📈 S&P 400 주식 분석기")
     st.markdown("**10개 주요 섹터 • 80+ 대표 기업** | 실시간 데이터 분석 및 시각화")
@@ -1423,6 +1712,25 @@ def main():
         - 사용자 지정 기간으로 특정 구간만 상세 분석이 가능합니다
         - 성과지표 테이블은 숫자 기준으로 정확한 정렬이 가능합니다
         """)
+
+def main():
+    """메인 함수: 페이지 네비게이션 및 라우팅"""
+    
+    # 사이드바에 페이지 선택 추가
+    st.sidebar.title("📊 통합 금융 분석기")
+    
+    # 페이지 선택
+    page = st.sidebar.selectbox(
+        "분석 도구 선택:",
+        ["📈 주식 분석", "📊 매크로 경제 분석"],
+        help="원하는 분석 도구를 선택하세요"
+    )
+    
+    # 선택된 페이지에 따라 함수 실행
+    if page == "📈 주식 분석":
+        stock_analysis_page()
+    elif page == "📊 매크로 경제 분석":
+        macro_analysis_page()
 
 if __name__ == "__main__":
     main()
