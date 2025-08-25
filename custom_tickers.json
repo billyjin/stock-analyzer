@@ -1,0 +1,11 @@
+{
+  "custom_tickers": {
+    "MSFT": {
+      "sector": "💻 기술",
+      "name": "Microsoft Corporation",
+      "added_date": "2025-08-26 00:35:09",
+      "added_by": "efdf0ede34ea"
+    }
+  },
+  "last_updated": "2025-08-26T00:35:09.465338"
+}

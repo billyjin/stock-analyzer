@@ -17,6 +17,11 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import time
 import os
+import re
+import io
+import json
+from ticker_management import TickerManager, ticker_management_ui
+from persistent_storage import initialize_persistent_storage
 warnings.filterwarnings('ignore')
 
 # yfinance만 사용 (안정성을 위해)
@@ -216,6 +221,41 @@ STOCK_SECTORS = {
 ALL_STOCKS = {}
 for sector, stocks in STOCK_SECTORS.items():
     ALL_STOCKS.update(stocks)
+
+# 티커 관리자 인스턴스
+TICKER_MANAGER = TickerManager()
+
+def get_combined_stock_list():
+    """기본 주식 + 커스텀 주식 통합 리스트 반환"""
+    combined_stocks = {}
+    
+    # 기본 주식들
+    for sector, stocks in STOCK_SECTORS.items():
+        if sector not in combined_stocks:
+            combined_stocks[sector] = {}
+        combined_stocks[sector].update(stocks)
+    
+    # 커스텀 주식들 추가
+    if 'custom_tickers' in st.session_state:
+        for ticker, info in st.session_state.custom_tickers.items():
+            sector = info['sector']
+            name = info['name']
+            
+            if sector not in combined_stocks:
+                combined_stocks[sector] = {}
+            combined_stocks[sector][ticker] = name
+    
+    return combined_stocks
+
+def get_all_stocks_flat():
+    """모든 주식을 평면적으로 반환 (역순 매핑)"""
+    all_stocks = {}
+    combined_list = get_combined_stock_list()
+    
+    for sector, stocks in combined_list.items():
+        all_stocks.update(stocks)
+    
+    return all_stocks
 
 @st.cache_data(ttl=3600*24)  # 24시간 캐시 (하루)
 def fetch_stock_data_full(ticker, period='max'):
@@ -1121,11 +1161,14 @@ def stock_analysis_page():
         # 섹터 선택
         st.sidebar.subheader("📊 섹터 선택")
         
+        # 통합 주식 리스트 사용
+        combined_stocks = get_combined_stock_list()
+        
         # 전체 선택/해제 버튼
         col1, col2 = st.sidebar.columns(2)
         with col1:
             if st.button("🔘 전체 선택", key="select_all"):
-                st.session_state.selected_sectors = list(STOCK_SECTORS.keys())
+                st.session_state.selected_sectors = list(combined_stocks.keys())
         with col2:
             if st.button("⭕ 전체 해제", key="deselect_all"):
                 st.session_state.selected_sectors = []
@@ -1136,42 +1179,54 @@ def stock_analysis_page():
         
         selected_sectors = st.sidebar.multiselect(
             "분석할 섹터를 선택하세요:",
-            list(STOCK_SECTORS.keys()),
+            list(combined_stocks.keys()),
             default=st.session_state.selected_sectors,
             key="sector_multiselect"
         )
         
         # 선택된 섹터 수 표시
-        total_stocks = sum(len(STOCK_SECTORS[sector]) for sector in selected_sectors)
-        st.sidebar.info(f"📊 선택된 섹터: {len(selected_sectors)}개 | 총 주식: {total_stocks}개")
+        total_stocks = sum(len(combined_stocks[sector]) for sector in selected_sectors)
+        
+        # 커스텀 티커 수 계산
+        custom_count = 0
+        if 'custom_tickers' in st.session_state:
+            for sector in selected_sectors:
+                custom_count += sum(1 for ticker, info in st.session_state.custom_tickers.items() 
+                                  if info['sector'] == sector)
+        
+        st.sidebar.info(f"📊 선택된 섹터: {len(selected_sectors)}개 | 총 주식: {total_stocks}개 (커스텀: {custom_count}개)")
         
         # 선택된 섹터의 주식들
         for sector in selected_sectors:
-            selected_stocks.extend(list(STOCK_SECTORS[sector].keys()))
+            selected_stocks.extend(list(combined_stocks[sector].keys()))
     
     else:
         # 개별 주식 검색
         st.sidebar.subheader("🔍 주식 검색")
         
+        # 통합 주식 리스트 사용
+        combined_stocks = get_combined_stock_list()
+        all_stocks_flat = get_all_stocks_flat()
+        
         # 섹터별 필터링
         filter_sector = st.sidebar.selectbox(
             "섹터 필터 (선택사항):",
-            ["전체 섹터"] + list(STOCK_SECTORS.keys())
+            ["전체 섹터"] + list(combined_stocks.keys())
         )
         
         # 필터링된 주식 리스트
         if filter_sector == "전체 섹터":
-            available_stocks = ALL_STOCKS
+            available_stocks = all_stocks_flat
         else:
-            available_stocks = STOCK_SECTORS[filter_sector]
+            available_stocks = combined_stocks[filter_sector]
         
         # 기본 주식 선택
         default_stocks = st.sidebar.multiselect(
             f"주식 선택 ({len(available_stocks)}개 중):",
             list(available_stocks.keys()),
             format_func=lambda x: f"{x} - {available_stocks[x]}",
-            max_selections=20,  # 최대 20개 제한
-            help="최대 20개까지 선택 가능합니다"
+            max_selections=30,  # 최대 30개로 증가
+            help="최대 30개까지 선택 가능합니다"
         )
         
         # 빠른 선택 버튼들
@@ -1184,7 +1239,31 @@ def stock_analysis_page():
             if st.button("🌾 농업 종목", key="agri_stocks"):
                 default_stocks = ['DE', 'ADM', 'TSN', 'CTVA']
         
-        # 커스텀 티커 입력
+        # 스마트 티커 입력 (자동 검증 및 분류)
+        st.sidebar.markdown("**🔧 스마트 티커 추가:**")
+        smart_ticker_input = st.sidebar.text_input(
+            "티커 입력 (자동 검증):",
+            placeholder="예: NVDA (자동 섹터 분류)",
+            key="smart_ticker"
+        )
+        
+        if smart_ticker_input:
+            ticker = smart_ticker_input.strip().upper()
+            is_valid, error_msg, stock_info = TICKER_MANAGER.validate_ticker(ticker)
+            
+            if is_valid:
+                sector = TICKER_MANAGER.classify_sector(ticker, stock_info)
+                st.sidebar.success(f"✅ {ticker} → {sector}")
+                
+                if st.sidebar.button(f"➕ {ticker} 추가", key="add_smart_ticker"):
+                    success, message = TICKER_MANAGER.add_ticker(ticker)
+                    if success:
+                        st.sidebar.success("추가됨!")
+                        st.rerun()
+            else:
+                st.sidebar.error(f"❌ {error_msg}")
+        
+        # 기존 커스텀 티커 입력 (호환성 유지)
         custom_tickers = st.sidebar.text_input(
             "추가 티커 입력 (쉼표로 구분):",
             placeholder="예: TSLA, NFLX, AMD"
@@ -1197,7 +1276,8 @@ def stock_analysis_page():
             selected_stocks.extend(custom_list)
         
         # 선택된 주식 수 표시
-        st.sidebar.info(f"🎯 선택된 주식: {len(selected_stocks)}개")
+        custom_count = len([t for t in selected_stocks if t in st.session_state.get('custom_tickers', {})])
+        st.sidebar.info(f"🎯 선택된 주식: {len(selected_stocks)}개 (커스텀: {custom_count}개)")
     
     # 기간 설정
     st.sidebar.subheader("📅 분석 기간")
@@ -1749,8 +1829,20 @@ def stock_analysis_page():
         - 성과지표 테이블은 숫자 기준으로 정확한 정렬이 가능합니다
         """)
 
+def ticker_management_page():
+    """티커 관리 페이지"""
+    st.title("🔧 티커 관리 시스템")
+    st.markdown("**주식 티커 추가 • 수정 • 삭제** | 엑셀 파일 관리 및 Google Sheets 연동")
+    st.markdown("---")
+    
+    # 티커 관리 UI 표시
+    ticker_management_ui()
+
 def main():
     """메인 함수: 페이지 네비게이션 및 라우팅"""
+    
+    # 앱 시작 시 영구 저장소 초기화
+    initialize_persistent_storage()
     
     # 사이드바에 페이지 선택 추가
     st.sidebar.title("📊 통합 금융 분석기")
@@ -1758,7 +1850,7 @@ def main():
     # 페이지 선택
     page = st.sidebar.selectbox(
         "분석 도구 선택:",
-        ["📈 주식 분석", "📊 매크로 경제 분석"],
+        ["📈 주식 분석", "📊 매크로 경제 분석", "🔧 티커 관리"],
         help="원하는 분석 도구를 선택하세요"
     )
     
@@ -1767,6 +1859,8 @@ def main():
         stock_analysis_page()
     elif page == "📊 매크로 경제 분석":
         macro_analysis_page()
+    elif page == "🔧 티커 관리":
+        ticker_management_page()
 
 if __name__ == "__main__":
     main()
