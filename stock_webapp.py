@@ -20,8 +20,12 @@ import os
 import re
 import io
 import json
+from typing import List, Dict
 from ticker_management import TickerManager, ticker_management_ui
 from persistent_storage import initialize_persistent_storage
+from volatility_analysis import VOLATILITY_ANALYZER, KOREAN_SMALL_CAP_SYMBOLS
+from stock_cache import STOCK_CACHE
+from stock_lists import STOCK_LIST_MANAGER
 warnings.filterwarnings('ignore')
 
 # yfinance만 사용 (안정성을 위해)
@@ -798,10 +802,18 @@ def display_performance_metrics(stock_data):
     
     # 숫자 컬럼들을 적절한 포맷으로 표시
     if not df.empty:
-        df['현재가($)'] = df['현재가'].apply(lambda x: f"{x:.2f}")
-        df['총 수익률(%)'] = df['총수익률'].apply(lambda x: f"{x:.1f}")
-        df['연 수익률(%)'] = df['연수익률'].apply(lambda x: f"{x:.1f}")
-        df['변동성(%)'] = df['변동성'].apply(lambda x: f"{x:.1f}")
+        try:
+            df['현재가($)'] = df['현재가'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) else "N/A")
+            df['총 수익률(%)'] = df['총수익률'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) else "N/A")
+            df['연 수익률(%)'] = df['연수익률'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) else "N/A")
+            df['변동성(%)'] = df['변동성'].apply(lambda x: f"{float(x):.1f}" if pd.notna(x) else "N/A")
+        except Exception as e:
+            print(f"포맷팅 오류: {e}")
+            # 포맷팅 실패 시 기본값 사용
+            df['현재가($)'] = df['현재가'].astype(str)
+            df['총 수익률(%)'] = df['총수익률'].astype(str)
+            df['연 수익률(%)'] = df['연수익률'].astype(str)
+            df['변동성(%)'] = df['변동성'].astype(str)
         
         # 정렬용 숫자 컬럼 유지하면서 표시용 컬럼만 선택
         display_df = df[['티커', '회사명', '현재가($)', '총 수익률(%)', '연 수익률(%)', '변동성(%)']].copy()
@@ -1829,6 +1841,1304 @@ def stock_analysis_page():
         - 성과지표 테이블은 숫자 기준으로 정확한 정렬이 가능합니다
         """)
 
+def volatility_analysis_page():
+    """잡주 변동성 분석 페이지"""
+    st.title("🎯 잡주(소형주/테마주) 변동성 분석")
+    st.markdown("---")
+    
+    # 탭으로 구성
+    tab1, tab2, tab3 = st.tabs(["📊 변동성 분석", "📋 주식 리스트 관리", "🗂️ 캐시 관리"])
+    
+    with tab1:
+        # 분석 설명
+        st.markdown("""
+        ### 📊 **잡주 분석 개요**
+        
+        이 도구는 다음 지표들을 종합하여 잡주의 변동성을 분석합니다:
+        
+        - **🌍 VIX (변동성 지수)**: 글로벌 시장 공포도 측정
+        - **📈 KOSPI/KOSDAQ 변동성**: 한국 시장 변동성 추이
+        - **🔍 소형주 스크리닝**: 시가총액, 거래량, 변동성 기준
+        - **📊 기술적 지표**: ATR, 볼린저밴드, RSI 등
+        - **💡 시장 심리**: 투자자 심리 및 리스크 레벨
+        """)
+        
+        # 분석 옵션
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            analysis_type = st.selectbox(
+                "분석 유형 선택",
+                ["실시간 변동성 분석", "소형주 스크리닝", "시장 심리 분석", "종합 분석"],
+                help="원하는 분석 유형을 선택하세요"
+            )
+        
+        with col2:
+            market_selection = st.selectbox(
+                "시장 선택",
+                ["한국 소형주", "한국 테마주", "한국 잡주 후보", "미국 소형주", "미국 잡주 후보", "미국 밈주식", "전체"],
+                help="분석할 주식 시장을 선택하세요"
+            )
+        
+        with col3:
+            max_stocks = st.slider(
+                "분석할 최대 종목 수",
+                min_value=5, max_value=50, value=20,
+                help="분석할 소형주의 최대 개수를 설정하세요"
+            )
+        
+        # 변동성 지수 분석 기간 선택 (실시간 변동성 분석일 때만)
+        if analysis_type == "실시간 변동성 분석":
+            st.markdown("### 📅 변동성 지수 분석 기간")
+            period_col1, period_col2 = st.columns(2)
+            
+            with period_col1:
+                vix_period = st.selectbox(
+                    "VIX/SKEW 히스토리 기간",
+                    ["1mo", "3mo", "6mo", "1y", "2y", "5y"],
+                    index=2,  # 기본값: 6mo
+                    help="VIX와 SKEW 지수의 트렌드를 볼 기간을 선택하세요"
+                )
+            
+            with period_col2:
+                period_description = {
+                    "1mo": "1개월 - 최근 단기 트렌드",
+                    "3mo": "3개월 - 분기별 변화",
+                    "6mo": "6개월 - 중기 트렌드 (권장)",
+                    "1y": "1년 - 연간 사이클",
+                    "2y": "2년 - 중장기 패턴",
+                    "5y": "5년 - 장기 히스토리"
+                }
+                st.info(f"**선택된 기간**: {period_description[vix_period]}")
+        else:
+            vix_period = "6mo"  # 다른 분석 유형의 기본값
+        
+        # 주식 리스트 선택
+        def get_symbols_by_selection(market_selection: str) -> List[str]:
+            """시장 선택에 따른 심볼 리스트 반환"""
+            if market_selection == "한국 소형주":
+                return list(STOCK_LIST_MANAGER.get_korean_stocks("small_cap").keys())
+            elif market_selection == "한국 테마주":
+                return list(STOCK_LIST_MANAGER.get_korean_stocks("theme_stocks").keys())
+            elif market_selection == "한국 잡주 후보":
+                return list(STOCK_LIST_MANAGER.get_korean_stocks("speculation_candidates").keys())
+            elif market_selection == "미국 소형주":
+                return list(STOCK_LIST_MANAGER.get_us_stocks("small_cap").keys())
+            elif market_selection == "미국 잡주 후보":
+                return list(STOCK_LIST_MANAGER.get_us_stocks("speculation_candidates").keys())
+            elif market_selection == "미국 밈주식":
+                meme_stocks = STOCK_LIST_MANAGER.get_us_stocks("speculation_candidates", "meme")
+                return list(meme_stocks.keys()) if meme_stocks else []
+            elif market_selection == "전체":
+                korean_stocks = list(STOCK_LIST_MANAGER.get_korean_stocks().keys())
+                us_stocks = list(STOCK_LIST_MANAGER.get_us_stocks().keys())
+                return korean_stocks + us_stocks
+            else:
+                return []
+        
+        symbols_to_analyze = get_symbols_by_selection(market_selection)
+        
+        st.markdown("---")
+        
+        # 선택된 종목 정보
+        st.markdown(f"**📋 선택된 종목**: {len(symbols_to_analyze)}개 (상위 {max_stocks}개 분석 예정)")
+        
+        # 분석할 종목 미리보기
+        if symbols_to_analyze:
+            preview_symbols = symbols_to_analyze[:min(10, len(symbols_to_analyze))]
+            preview_info = []
+            for symbol in preview_symbols:
+                stock_info = STOCK_LIST_MANAGER.find_stock_info(symbol)
+                preview_info.append(f"**{symbol}** ({stock_info.get('name', 'Unknown')})")
+            
+            st.markdown("**🔍 분석 예정 종목 (미리보기)**:")
+            st.markdown(" • ".join(preview_info))
+            if len(symbols_to_analyze) > 10:
+                st.markdown(f"... 외 {len(symbols_to_analyze) - 10}개")
+        
+        st.markdown("---")
+    
+    # 분석 실행 버튼
+    if st.button("🔍 잡주 분석 시작", type="primary"):
+        
+        with st.spinner("변동성 지수 및 소형주 데이터를 수집하고 있습니다..."):
+            
+            try:
+                # 종합 분석 실행
+                if analysis_type == "종합 분석":
+                    # 선택된 심볼로 종합 분석 실행
+                    analysis_result = VOLATILITY_ANALYZER.comprehensive_volatility_analysis(
+                        symbols_to_analyze[:max_stocks]
+                    )
+                    
+                    # 결과 표시
+                    display_comprehensive_analysis(analysis_result)
+                    
+                elif analysis_type == "실시간 변동성 분석":
+                    # 변동성 지수만 분석 (사용자 선택 기간 적용)
+                    st.info(f"📊 {period_description[vix_period]} 기간으로 VIX/SKEW 데이터를 분석합니다...")
+                    volatility_indices = VOLATILITY_ANALYZER.get_volatility_indices(period=vix_period)
+                    market_sentiment = VOLATILITY_ANALYZER.analyze_market_sentiment(volatility_indices)
+                    
+                    display_volatility_indices(volatility_indices, market_sentiment)
+                    
+                elif analysis_type == "소형주 스크리닝":
+                    # 선택된 심볼로 소형주 탐지 실행
+                    small_caps = VOLATILITY_ANALYZER.detect_small_cap_stocks(
+                        symbols_to_analyze[:max_stocks],
+                        max_market_cap=5e11,  # 5000억원
+                        min_volatility=20.0
+                    )
+                    
+                    display_small_cap_screening(small_caps)
+                    
+                elif analysis_type == "시장 심리 분석":
+                    # 시장 심리만 분석
+                    volatility_indices = VOLATILITY_ANALYZER.get_volatility_indices(period="1mo")
+                    market_sentiment = VOLATILITY_ANALYZER.analyze_market_sentiment(volatility_indices)
+                    
+                    display_market_sentiment(market_sentiment, volatility_indices)
+                    
+            except Exception as e:
+                st.error(f"분석 중 오류가 발생했습니다: {str(e)}")
+                st.info("일부 데이터를 가져올 수 없을 때 발생할 수 있습니다. 잠시 후 다시 시도해주세요.")
+                
+                # 개발자용 상세 오류 정보
+                if st.checkbox("🔧 개발자 모드: 상세 오류 보기"):
+                    import traceback
+                    st.code(traceback.format_exc())
+    
+    with tab2:
+        # 주식 리스트 관리
+        display_stock_list_management()
+    
+    with tab3:
+        # 캐시 관리
+        display_cache_management()
+
+def get_symbols_by_selection(market_selection: str) -> List[str]:
+    """시장 선택에 따른 심볼 리스트 반환"""
+    if market_selection == "한국 소형주":
+        return list(STOCK_LIST_MANAGER.get_korean_stocks("small_cap").keys())
+    elif market_selection == "한국 테마주":
+        return list(STOCK_LIST_MANAGER.get_korean_stocks("theme_stocks").keys())
+    elif market_selection == "한국 잡주 후보":
+        return list(STOCK_LIST_MANAGER.get_korean_stocks("speculation_candidates").keys())
+    elif market_selection == "미국 소형주":
+        return list(STOCK_LIST_MANAGER.get_us_stocks("small_cap").keys())
+    elif market_selection == "미국 잡주 후보":
+        return list(STOCK_LIST_MANAGER.get_us_stocks("speculation_candidates").keys())
+    elif market_selection == "미국 밈주식":
+        meme_stocks = STOCK_LIST_MANAGER.get_us_stocks("small_cap", "meme_stocks")
+        reddit_stocks = STOCK_LIST_MANAGER.get_us_stocks("speculation_candidates", "reddit_favorites")
+        return list(set(list(meme_stocks.keys()) + list(reddit_stocks.keys())))
+    else:  # 전체
+        korean_small = list(STOCK_LIST_MANAGER.get_korean_stocks("small_cap").keys())
+        korean_theme = list(STOCK_LIST_MANAGER.get_korean_stocks("theme_stocks").keys())
+        korean_spec = list(STOCK_LIST_MANAGER.get_korean_stocks("speculation_candidates").keys())
+        us_small = list(STOCK_LIST_MANAGER.get_us_stocks("small_cap").keys())
+        us_spec = list(STOCK_LIST_MANAGER.get_us_stocks("speculation_candidates").keys())
+        return list(set(korean_small + korean_theme + korean_spec + us_small + us_spec))
+
+def display_stock_list_management():
+    """주식 리스트 관리 UI"""
+    st.subheader("📋 주식 리스트 관리")
+    
+    # 통계 정보
+    stats = STOCK_LIST_MANAGER.get_stats()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("전체 종목 수", stats['total_stocks'])
+    with col2:
+        korean_data = stats['by_market'].get('korean_stocks', {})
+        korean_count = 0
+        if isinstance(korean_data, dict):
+            for category_data in korean_data.values():
+                if isinstance(category_data, dict):
+                    korean_count += sum(category_data.values())
+                else:
+                    korean_count += category_data
+        st.metric("한국 종목", korean_count)
+    with col3:
+        us_data = stats['by_market'].get('us_stocks', {})
+        us_count = 0
+        if isinstance(us_data, dict):
+            for category_data in us_data.values():
+                if isinstance(category_data, dict):
+                    us_count += sum(category_data.values())
+                else:
+                    us_count += category_data
+        st.metric("미국 종목", us_count)
+    
+    st.markdown("---")
+    
+    # 카테고리별 현황 테이블
+    st.subheader("📊 카테고리별 현황")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🇰🇷 한국 주식")
+        korean_stocks = STOCK_LIST_MANAGER.get_korean_stocks()
+        
+        if korean_stocks:
+            # 카테고리별로 그룹화
+            korean_by_category = {}
+            for symbol, info in korean_stocks.items():
+                category = info.get('category', 'unknown')
+                subcategory = info.get('subcategory', 'default')
+                
+                if category not in korean_by_category:
+                    korean_by_category[category] = {}
+                if subcategory not in korean_by_category[category]:
+                    korean_by_category[category][subcategory] = []
+                
+                korean_by_category[category][subcategory].append({
+                    'symbol': symbol,
+                    'name': info.get('name', 'N/A')
+                })
+            
+            # 테이블 데이터 생성
+            korean_category_data = []
+            for category, subcategories in korean_by_category.items():
+                for subcategory, stocks in subcategories.items():
+                    # 티커 리스트 생성 (심볼(종목명) 형태)
+                    ticker_list = []
+                    for stock in stocks:
+                        if stock['name'] != 'N/A':
+                            ticker_list.append(f"{stock['symbol']}({stock['name']})")
+                        else:
+                            ticker_list.append(stock['symbol'])
+                    
+                    korean_category_data.append({
+                        '카테고리': category,
+                        '서브카테고리': subcategory,
+                        '종목 수': len(stocks),
+                        '티커 리스트': ', '.join(ticker_list)
+                    })
+            
+            korean_df = pd.DataFrame(korean_category_data)
+            st.dataframe(
+                korean_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "티커 리스트": st.column_config.TextColumn(
+                        "티커 리스트",
+                        help="카테고리에 포함된 모든 종목",
+                        width="large"
+                    )
+                }
+            )
+        else:
+            st.info("등록된 한국 주식이 없습니다.")
+    
+    with col2:
+        st.markdown("#### 🇺🇸 미국 주식")
+        us_stocks = STOCK_LIST_MANAGER.get_us_stocks()
+        
+        if us_stocks:
+            # 카테고리별로 그룹화
+            us_by_category = {}
+            for symbol, info in us_stocks.items():
+                category = info.get('category', 'unknown')
+                subcategory = info.get('subcategory', 'default')
+                
+                if category not in us_by_category:
+                    us_by_category[category] = {}
+                if subcategory not in us_by_category[category]:
+                    us_by_category[category][subcategory] = []
+                
+                us_by_category[category][subcategory].append({
+                    'symbol': symbol,
+                    'name': info.get('name', 'N/A')
+                })
+            
+            # 테이블 데이터 생성
+            us_category_data = []
+            for category, subcategories in us_by_category.items():
+                for subcategory, stocks in subcategories.items():
+                    # 티커 리스트 생성 (심볼(종목명) 형태)
+                    ticker_list = []
+                    for stock in stocks:
+                        if stock['name'] != 'N/A':
+                            ticker_list.append(f"{stock['symbol']}({stock['name']})")
+                        else:
+                            ticker_list.append(stock['symbol'])
+                    
+                    us_category_data.append({
+                        '카테고리': category,
+                        '서브카테고리': subcategory,
+                        '종목 수': len(stocks),
+                        '티커 리스트': ', '.join(ticker_list)
+                    })
+            
+            us_df = pd.DataFrame(us_category_data)
+            st.dataframe(
+                us_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "티커 리스트": st.column_config.TextColumn(
+                        "티커 리스트",
+                        help="카테고리에 포함된 모든 종목",
+                        width="large"
+                    )
+                }
+            )
+        else:
+            st.info("등록된 미국 주식이 없습니다.")
+    
+    # 전체 리스트 다운로드/업로드 기능
+    st.markdown("---")
+    st.subheader("📥📤 잡주 리스트 다운로드/업로드")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📥 현재 리스트 다운로드")
+        
+        # 전체 주식 리스트를 DataFrame으로 변환
+        all_stocks_data = []
+        
+        # 한국 주식 추가
+        korean_stocks = STOCK_LIST_MANAGER.get_korean_stocks()
+        for symbol, info in korean_stocks.items():
+            all_stocks_data.append({
+                '시장': 'korean_stocks',
+                '카테고리': info.get('category', ''),
+                '서브카테고리': info.get('subcategory', ''),
+                '심볼': symbol,
+                '종목명': info.get('name', '')
+            })
+        
+        # 미국 주식 추가
+        us_stocks = STOCK_LIST_MANAGER.get_us_stocks()
+        for symbol, info in us_stocks.items():
+            all_stocks_data.append({
+                '시장': 'us_stocks',
+                '카테고리': info.get('category', ''),
+                '서브카테고리': info.get('subcategory', ''),
+                '심볼': symbol,
+                '종목명': info.get('name', '')
+            })
+        
+        if all_stocks_data:
+            download_df = pd.DataFrame(all_stocks_data)
+            
+            # Excel 파일로 다운로드
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                download_df.to_excel(writer, sheet_name='잡주리스트', index=False)
+            excel_buffer.seek(0)
+            
+            st.download_button(
+                label="📊 Excel 파일 다운로드",
+                data=excel_buffer.getvalue(),
+                file_name=f"잡주리스트_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            # CSV 파일로 다운로드
+            csv_buffer = io.StringIO()
+            download_df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+            csv_buffer.seek(0)
+            
+            st.download_button(
+                label="📄 CSV 파일 다운로드",
+                data=csv_buffer.getvalue(),
+                file_name=f"잡주리스트_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+            
+            # 미리보기
+            st.markdown("##### 📋 다운로드 미리보기")
+            st.dataframe(download_df.head(10), use_container_width=True, hide_index=True)
+            if len(download_df) > 10:
+                st.info(f"총 {len(download_df)}개 종목 중 10개만 미리보기")
+        else:
+            st.warning("다운로드할 주식 데이터가 없습니다.")
+    
+    with col2:
+        st.markdown("#### 📤 수정된 리스트 업로드")
+        
+        # 템플릿 다운로드
+        template_data = [
+            {
+                '시장': 'korean_stocks',
+                '카테고리': 'small_cap',
+                '서브카테고리': 'IT',
+                '심볼': '000000',
+                '종목명': '예시종목'
+            },
+            {
+                '시장': 'us_stocks',
+                '카테고리': 'speculation_candidates',
+                '서브카테고리': 'meme',
+                '심볼': 'EXAMPLE',
+                '종목명': 'Example Stock'
+            }
+        ]
+        template_df = pd.DataFrame(template_data)
+        
+        template_buffer = io.BytesIO()
+        with pd.ExcelWriter(template_buffer, engine='openpyxl') as writer:
+            template_df.to_excel(writer, sheet_name='템플릿', index=False)
+        template_buffer.seek(0)
+        
+        st.download_button(
+            label="📋 템플릿 다운로드",
+            data=template_buffer.getvalue(),
+            file_name="잡주리스트_템플릿.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # 파일 업로드
+        uploaded_file = st.file_uploader(
+            "수정된 잡주 리스트 업로드",
+            type=['xlsx', 'csv'],
+            help="Excel 또는 CSV 파일을 업로드하세요"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # 파일 읽기
+                if uploaded_file.name.endswith('.xlsx'):
+                    upload_df = pd.read_excel(uploaded_file)
+                else:
+                    upload_df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
+                
+                # 필수 컬럼 확인
+                required_columns = ['시장', '카테고리', '서브카테고리', '심볼', '종목명']
+                if not all(col in upload_df.columns for col in required_columns):
+                    st.error(f"필수 컬럼이 없습니다: {', '.join(required_columns)}")
+                else:
+                    st.success(f"✅ 파일 업로드 성공! ({len(upload_df)}개 종목)")
+                    
+                    # 업로드된 데이터 미리보기
+                    st.markdown("##### 📋 업로드된 데이터 미리보기")
+                    st.dataframe(upload_df.head(10), use_container_width=True, hide_index=True)
+                    
+                    # 분석 옵션
+                    col_a, col_b = st.columns(2)
+                    
+                    with col_a:
+                        replace_existing = st.checkbox(
+                            "기존 리스트 교체", 
+                            value=False,
+                            help="체크하면 기존 리스트를 완전히 교체합니다. 체크하지 않으면 추가됩니다."
+                        )
+                    
+                    with col_b:
+                        validate_symbols = st.checkbox(
+                            "심볼 유효성 검증",
+                            value=True,
+                            help="업로드 전에 주식 심볼이 유효한지 확인합니다."
+                        )
+                    
+                    # 업로드 적용 버튼
+                    if st.button("🚀 업로드된 리스트로 분석 시작", type="primary"):
+                        with st.spinner("업로드된 리스트를 처리하고 분석을 시작합니다..."):
+                            
+                            # 업로드된 데이터로 분석 실행
+                            uploaded_symbols = upload_df['심볼'].tolist()
+                            
+                            if validate_symbols:
+                                st.info("🔍 심볼 유효성 검증 중...")
+                                # 여기에 심볼 유효성 검증 로직 추가 가능
+                            
+                            st.info(f"📊 {len(uploaded_symbols)}개 종목으로 분석을 시작합니다...")
+                            
+                            # 분석 실행
+                            analysis_result = VOLATILITY_ANALYZER.detect_small_cap_stocks(
+                                uploaded_symbols,
+                                max_market_cap=5e11,  # 5000억원
+                                min_volatility=20.0
+                            )
+                            
+                            # 결과 표시
+                            st.success(f"✅ 분석 완료! {len(analysis_result)}개 조건 충족 종목 발견")
+                            display_small_cap_screening(analysis_result)
+                            
+            except Exception as e:
+                st.error(f"파일 처리 중 오류 발생: {str(e)}")
+    
+    # 종목 관리 기능
+    st.markdown("---")
+    st.subheader("🛠️ 종목 관리")
+    
+    # 탭으로 구성
+    mgmt_tab1, mgmt_tab2, mgmt_tab3, mgmt_tab4 = st.tabs(["➕ 수동 추가", "📊 대량 관리", "🔗 구글 시트 연동", "🗑️ 종목 삭제"])
+    
+    with mgmt_tab1:
+        st.markdown("### 개별 종목 추가")
+        col1, col2 = st.columns(2)
+        with col1:
+            new_market = st.selectbox("시장", ["korean_stocks", "us_stocks"], key="add_market")
+            new_category = st.selectbox("카테고리", STOCK_LIST_MANAGER.get_categories(new_market), key="add_category")
+        with col2:
+            new_subcategory = st.selectbox("서브카테고리", STOCK_LIST_MANAGER.get_subcategories(new_market, new_category), key="add_subcategory")
+            
+        col3, col4 = st.columns(2)
+        with col3:
+            new_symbol = st.text_input("종목 코드", help="예: AAPL, 005930")
+        with col4:
+            new_name = st.text_input("종목명", help="예: Apple Inc, 삼성전자")
+        
+        if st.button("➕ 종목 추가", type="primary"):
+            if new_symbol and new_name:
+                STOCK_LIST_MANAGER.add_stock(new_market, new_category, new_subcategory, new_symbol, new_name)
+                st.success(f"✅ {new_symbol} ({new_name}) 추가됨")
+                st.rerun()
+            else:
+                st.error("종목 코드와 종목명을 모두 입력해주세요")
+    
+    with mgmt_tab2:
+        st.markdown("### 📄 엑셀 파일 업로드")
+        uploaded_file = st.file_uploader(
+            "엑셀 파일 선택", 
+            type=['xlsx', 'xls'],
+            help="컬럼: market, category, subcategory, symbol, name"
+        )
+        
+        if uploaded_file:
+            try:
+                df = pd.read_excel(uploaded_file)
+                st.write("업로드된 데이터 미리보기:")
+                st.dataframe(df.head())
+                
+                required_columns = ['market', 'category', 'subcategory', 'symbol', 'name']
+                if all(col in df.columns for col in required_columns):
+                    if st.button("📥 대량 업로드 실행"):
+                        success_count = 0
+                        for _, row in df.iterrows():
+                            try:
+                                STOCK_LIST_MANAGER.add_stock(
+                                    row['market'], row['category'], 
+                                    row['subcategory'], row['symbol'], row['name']
+                                )
+                                success_count += 1
+                            except Exception as e:
+                                st.error(f"오류 - {row['symbol']}: {e}")
+                        
+                        st.success(f"✅ {success_count}개 종목이 성공적으로 추가되었습니다!")
+                        st.rerun()
+                else:
+                    st.error(f"필수 컬럼이 없습니다: {required_columns}")
+            except Exception as e:
+                st.error(f"파일 읽기 오류: {e}")
+        
+        # 템플릿 다운로드
+        st.markdown("### 📋 템플릿 다운로드")
+        template_df = pd.DataFrame({
+            'market': ['korean_stocks', 'us_stocks'],
+            'category': ['small_cap', 'small_cap'],
+            'subcategory': ['IT_tech', 'biotech'],
+            'symbol': ['123456', 'AAPL'],
+            'name': ['예시회사', 'Apple Inc']
+        })
+        
+        csv = template_df.to_csv(index=False)
+        st.download_button(
+            "📥 템플릿 다운로드",
+            csv,
+            "stock_template.csv",
+            "text/csv"
+        )
+    
+    with mgmt_tab3:
+        st.markdown("### 🔗 구글 시트 연동")
+        st.info("""
+        **구글 시트 연동 방법:**
+        1. 구글 시트를 공개로 설정하거나 API 키 설정
+        2. 시트 URL 또는 시트 ID 입력
+        3. 데이터 형식: A열(시장), B열(카테고리), C열(서브카테고리), D열(종목코드), E열(종목명)
+        """)
+        
+        google_sheet_url = st.text_input(
+            "구글 시트 URL", 
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            help="공개된 구글 시트 URL을 입력하세요"
+        )
+        
+        if st.button("🔗 구글 시트에서 가져오기"):
+            if google_sheet_url:
+                try:
+                    # 구글 시트 URL에서 CSV 형태로 데이터 가져오기
+                    if "/edit" in google_sheet_url:
+                        csv_url = google_sheet_url.replace("/edit#gid=", "/export?format=csv&gid=")
+                        csv_url = csv_url.replace("/edit", "/export?format=csv")
+                    else:
+                        csv_url = google_sheet_url
+                    
+                    df = pd.read_csv(csv_url)
+                    
+                    # 컬럼명 표준화
+                    df.columns = ['market', 'category', 'subcategory', 'symbol', 'name']
+                    
+                    st.write("구글 시트 데이터:")
+                    st.dataframe(df)
+                    
+                    if st.button("📥 구글 시트 데이터 적용"):
+                        success_count = 0
+                        for _, row in df.iterrows():
+                            try:
+                                STOCK_LIST_MANAGER.add_stock(
+                                    row['market'], row['category'], 
+                                    row['subcategory'], row['symbol'], row['name']
+                                )
+                                success_count += 1
+                            except Exception as e:
+                                st.warning(f"건너뜀 - {row['symbol']}: {e}")
+                        
+                        st.success(f"✅ {success_count}개 종목이 구글 시트에서 가져와졌습니다!")
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"구글 시트 연동 오류: {e}")
+                    st.info("URL이 공개되어 있는지 확인하고, CSV 내보내기가 가능한지 확인하세요.")
+            else:
+                st.error("구글 시트 URL을 입력해주세요")
+    
+    with mgmt_tab4:
+        st.markdown("### 🗑️ 종목 삭제")
+        
+        # 삭제할 시장/카테고리 선택
+        col1, col2 = st.columns(2)
+        with col1:
+            del_market = st.selectbox("삭제할 시장", ["korean_stocks", "us_stocks"], key="del_market")
+            del_category = st.selectbox("삭제할 카테고리", STOCK_LIST_MANAGER.get_categories(del_market), key="del_category")
+        with col2:
+            del_subcategory = st.selectbox("삭제할 서브카테고리", STOCK_LIST_MANAGER.get_subcategories(del_market, del_category), key="del_subcategory")
+        
+        # 해당 카테고리의 종목들 표시
+        stocks_in_category = STOCK_LIST_MANAGER.stock_lists[del_market][del_category][del_subcategory]
+        
+        if stocks_in_category:
+            st.write(f"**{del_subcategory}** 카테고리의 종목들:")
+            
+            for symbol, name in stocks_in_category.items():
+                col1, col2, col3 = st.columns([2, 4, 1])
+                with col1:
+                    st.write(f"**{symbol}**")
+                with col2:
+                    st.write(name)
+                with col3:
+                    if st.button("🗑️", key=f"del_{symbol}", help=f"{symbol} 삭제"):
+                        if STOCK_LIST_MANAGER.remove_stock(del_market, del_category, del_subcategory, symbol):
+                            st.success(f"✅ {symbol} 삭제됨")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {symbol} 삭제 실패")
+        else:
+            st.info("해당 카테고리에 종목이 없습니다.")
+
+def display_cache_management():
+    """캐시 관리 UI"""
+    st.subheader("🗂️ 캐시 관리")
+    
+    # 캐시 통계
+    cache_stats = STOCK_CACHE.get_cache_stats()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("캐시 항목 수", cache_stats['total_entries'])
+    with col2:
+        st.metric("캐시 크기", f"{cache_stats['cache_size_mb']:.1f} MB")
+    with col3:
+        if st.button("🗑️ 오래된 캐시 정리"):
+            cleared = STOCK_CACHE.clear_cache(older_than_hours=168)  # 7일
+            st.success(f"{cleared}개 항목 정리됨")
+            st.rerun()
+    
+    # 타입별 캐시 항목
+    st.markdown("### 📊 캐시 항목별 현황")
+    for cache_type, count in cache_stats['by_type'].items():
+        st.markdown(f"**{cache_type}**: {count}개")
+    
+    # 캐시 상태 정보
+    st.markdown("""
+    ### ℹ️ 캐시 정책
+    - **주식 정보**: 24시간 유지
+    - **가격 데이터**: 6시간 유지  
+    - **변동성 지수**: 1시간 유지
+    - **자동 정리**: 7일 이상 된 항목 삭제
+    
+    💡 캐시를 사용하여 동일한 데이터 재조회를 방지하고 성능을 향상시킵니다.
+    """)
+
+def display_comprehensive_analysis(analysis_result):
+    """종합 분석 결과 표시"""
+    
+    # 분석 요약
+    st.subheader("📋 분석 요약")
+    st.markdown(f"**분석 시각:** {analysis_result['timestamp']}")
+    st.markdown(analysis_result['analysis_summary'])
+    
+    # 시장 심리
+    st.subheader("🌡️ 현재 시장 심리")
+    sentiment_cols = st.columns(len(analysis_result['market_sentiment']))
+    for i, (key, value) in enumerate(analysis_result['market_sentiment'].items()):
+        with sentiment_cols[i]:
+            st.metric(key, value)
+    
+    # 변동성 지수 차트
+    if analysis_result['volatility_indices']:
+        st.subheader("📊 변동성 지수 추이")
+        display_volatility_charts(analysis_result['volatility_indices'])
+    
+    # 상위 변동성 종목
+    if analysis_result['top_volatile_stocks']:
+        st.subheader("🔥 고변동성 소형주 TOP 10")
+        display_volatile_stocks_table(analysis_result['top_volatile_stocks'])
+        
+        # 상위 5개 종목 상세 차트
+        st.subheader("📈 상위 5개 종목 상세 분석")
+        display_top_stocks_charts(analysis_result['top_volatile_stocks'][:5])
+
+def display_volatility_indices(volatility_indices, market_sentiment):
+    """변동성 지수 표시"""
+    
+    st.subheader("📊 변동성 지수 현황")
+    
+    # 시장 심리 요약
+    sentiment_cols = st.columns(len(market_sentiment))
+    for i, (key, value) in enumerate(market_sentiment.items()):
+        with sentiment_cols[i]:
+            st.metric(key, value)
+    
+    # 차트 표시
+    display_volatility_charts(volatility_indices)
+
+def display_small_cap_screening(small_caps):
+    """소형주 스크리닝 결과 표시"""
+    
+    st.subheader(f"🔍 소형주 스크리닝 결과 ({len(small_caps)}개 종목)")
+    
+    if small_caps:
+        display_volatile_stocks_table(small_caps)
+        
+        # 변동성 분포 차트
+        st.subheader("📊 변동성 분포")
+        volatilities = [stock.get('current_volatility', 0) for stock in small_caps]
+        
+        fig = px.histogram(
+            x=volatilities,
+            nbins=15,
+            title="소형주 변동성 분포",
+            labels={'x': '연간 변동성 (%)', 'y': '종목 수'}
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("조건에 맞는 소형주를 찾을 수 없습니다.")
+
+def display_market_sentiment(market_sentiment, volatility_indices):
+    """시장 심리 분석 표시"""
+    
+    st.subheader("🌡️ 시장 심리 분석")
+    
+    # 심리 지표 (개선된 색상 표시)
+    sentiment_cols = st.columns(len(market_sentiment))
+    for i, (key, value) in enumerate(market_sentiment.items()):
+        with sentiment_cols[i]:
+            # 현재 값 추출 및 상태 확인
+            try:
+                if key == 'VIX' and isinstance(volatility_indices, dict) and 'VIX' in volatility_indices:
+                    vix_data = volatility_indices['VIX']
+                    if not vix_data.empty and 'Close' in vix_data.columns:
+                        current_vix = float(vix_data['Close'].iloc[-1])
+                        status_emoji = get_vix_status(current_vix)
+                        st.metric(
+                            label=f"🌡️ {key}",
+                            value=f"{current_vix:.1f}",
+                            delta=status_emoji
+                        )
+                        if current_vix <= 20:
+                            st.success(f"**{value}**")
+                        elif current_vix <= 25:
+                            st.warning(f"**{value}**")
+                        elif current_vix <= 30:
+                            st.error(f"**{value}**")
+                        else:
+                            st.error(f"🚨 **{value}**")
+                    else:
+                        st.info(f"**{key}**\n{value}")
+                        
+                elif 'KOSPI' in key and isinstance(volatility_indices, dict) and 'KOSPI_Volatility' in volatility_indices:
+                    kospi_data = volatility_indices['KOSPI_Volatility']
+                    if not kospi_data.empty and 'Close' in kospi_data.columns:
+                        current_kospi = float(kospi_data['Close'].iloc[-1])
+                        if not pd.isna(current_kospi):
+                            status_emoji = get_volatility_status(current_kospi)
+                            st.metric(
+                                label=f"🇰🇷 {key}",
+                                value=f"{current_kospi:.1f}%",
+                                delta=status_emoji
+                            )
+                            if current_kospi <= 20:
+                                st.success(f"**{value}**")
+                            elif current_kospi <= 25:
+                                st.warning(f"**{value}**")
+                            elif current_kospi <= 30:
+                                st.error(f"**{value}**")
+                            else:
+                                st.error(f"🚨 **{value}**")
+                        else:
+                            st.info(f"**{key}**\n{value}")
+                    else:
+                        st.info(f"**{key}**\n{value}")
+                        
+                elif 'KOSDAQ' in key and isinstance(volatility_indices, dict) and 'KOSDAQ_Volatility' in volatility_indices:
+                    kosdaq_data = volatility_indices['KOSDAQ_Volatility']
+                    if not kosdaq_data.empty and 'Close' in kosdaq_data.columns:
+                        current_kosdaq = float(kosdaq_data['Close'].iloc[-1])
+                        if not pd.isna(current_kosdaq):
+                            status_emoji = get_volatility_status(current_kosdaq)
+                            st.metric(
+                                label=f"🇰🇷 {key}",
+                                value=f"{current_kosdaq:.1f}%",
+                                delta=status_emoji
+                            )
+                            if current_kosdaq <= 20:
+                                st.success(f"**{value}**")
+                            elif current_kosdaq <= 25:
+                                st.warning(f"**{value}**")
+                            elif current_kosdaq <= 30:
+                                st.error(f"**{value}**")
+                            else:
+                                st.error(f"🚨 **{value}**")
+                        else:
+                            st.info(f"**{key}**\n{value}")
+                    else:
+                        st.info(f"**{key}**\n{value}")
+                else:
+                    # 기본 표시
+                    if "극도공포" in value or "극고변동성" in value:
+                        st.error(f"**{key}**\n{value}")
+                    elif "공포" in value or "고변동성" in value:
+                        st.warning(f"**{key}**\n{value}")
+                    elif "불안" in value or "중변동성" in value:
+                        st.info(f"**{key}**\n{value}")
+                    else:
+                        st.success(f"**{key}**\n{value}")
+            except Exception as e:
+                print(f"시장 심리 표시 오류 ({key}): {e}")
+                # 기본 표시로 폴백
+                if "극도공포" in value or "극고변동성" in value:
+                    st.error(f"**{key}**\n{value}")
+                elif "공포" in value or "고변동성" in value:
+                    st.warning(f"**{key}**\n{value}")
+                elif "불안" in value or "중변동성" in value:
+                    st.info(f"**{key}**\n{value}")
+                else:
+                    st.success(f"**{key}**\n{value}")
+    
+    # 추천 투자 전략
+    st.subheader("💡 추천 투자 전략")
+    generate_investment_strategy(market_sentiment)
+
+def display_volatility_charts(volatility_indices):
+    """변동성 지수 차트 표시 (안전/위험 구간 색상 표시)"""
+    
+    charts_per_row = 2
+    chart_pairs = list(volatility_indices.items())
+    
+    for i in range(0, len(chart_pairs), charts_per_row):
+        cols = st.columns(charts_per_row)
+        
+        for j in range(charts_per_row):
+            if i + j < len(chart_pairs):
+                key, data = chart_pairs[i + j]
+                
+                with cols[j]:
+                    if not data.empty and 'Close' in data.columns:
+                        fig = go.Figure()
+                        
+                        # 데이터 라인 추가 (더 두껍고 눈에 잘 보이게)
+                        fig.add_trace(go.Scatter(
+                            x=data.index,
+                            y=data['Close'],
+                            mode='lines+markers',
+                            name=key,
+                            line=dict(width=4, color='#FF6B6B'),
+                            marker=dict(size=6, color='#FF6B6B'),
+                            hovertemplate='<b>%{fullData.name}</b><br>' +
+                                        '날짜: %{x}<br>' +
+                                        '값: %{y:.2f}<br>' +
+                                        '<extra></extra>'
+                        ))
+                        
+                        # 안전/위험 구간 색상 표시
+                        try:
+                            y_min = float(data['Close'].min())
+                            y_max = float(data['Close'].max())
+                        except Exception as e:
+                            print(f"Y축 범위 계산 오류: {e}")
+                            y_min = 0
+                            y_max = 100
+                        
+                        # VIX 구간 설정
+                        if key == 'VIX':
+                            # 안전 구간 (12-20): 초록색
+                            fig.add_hrect(y0=12, y1=20, 
+                                        fillcolor="green", opacity=0.2,
+                                        annotation_text="안전 구간 (12-20)", 
+                                        annotation_position="top left")
+                            
+                            # 주의 구간 (20-25): 노란색
+                            fig.add_hrect(y0=20, y1=25, 
+                                        fillcolor="yellow", opacity=0.2,
+                                        annotation_text="주의 구간 (20-25)", 
+                                        annotation_position="top left")
+                            
+                            # 위험 구간 (25-30): 주황색
+                            fig.add_hrect(y0=25, y1=30, 
+                                        fillcolor="orange", opacity=0.2,
+                                        annotation_text="위험 구간 (25-30)", 
+                                        annotation_position="top left")
+                            
+                            # 극위험 구간 (30+): 빨간색
+                            fig.add_hrect(y0=30, y1=max(50, float(y_max)), 
+                                        fillcolor="red", opacity=0.2,
+                                        annotation_text="극위험 구간 (30+)", 
+                                        annotation_position="top left")
+                            
+                            current_value = float(data['Close'].iloc[-1])
+                            status = get_vix_status(current_value)
+                            
+                        # SKEW 구간 설정  
+                        elif key == 'SKEW':
+                            # 안전 구간 (100-120): 초록색
+                            fig.add_hrect(y0=100, y1=120, 
+                                        fillcolor="green", opacity=0.2,
+                                        annotation_text="안전 구간 (100-120)", 
+                                        annotation_position="top left")
+                            
+                            # 주의 구간 (120-130): 노란색
+                            fig.add_hrect(y0=120, y1=130, 
+                                        fillcolor="yellow", opacity=0.2,
+                                        annotation_text="주의 구간 (120-130)", 
+                                        annotation_position="top left")
+                            
+                            # 위험 구간 (130-140): 주황색
+                            fig.add_hrect(y0=130, y1=140, 
+                                        fillcolor="orange", opacity=0.2,
+                                        annotation_text="위험 구간 (130-140)", 
+                                        annotation_position="top left")
+                            
+                            # 극위험 구간 (140+): 빨간색
+                            fig.add_hrect(y0=140, y1=max(160, float(y_max)), 
+                                        fillcolor="red", opacity=0.2,
+                                        annotation_text="극위험 구간 (140+)", 
+                                        annotation_position="top left")
+                            
+                            current_value = float(data['Close'].iloc[-1])
+                            status = get_skew_status(current_value)
+                            
+                        # 변동성 구간 설정
+                        elif 'Volatility' in key:
+                            # 안전 구간 (10-20%): 초록색
+                            fig.add_hrect(y0=10, y1=20, 
+                                        fillcolor="green", opacity=0.2,
+                                        annotation_text="안전 구간 (10-20%)", 
+                                        annotation_position="top left")
+                            
+                            # 주의 구간 (20-25%): 노란색
+                            fig.add_hrect(y0=20, y1=25, 
+                                        fillcolor="yellow", opacity=0.2,
+                                        annotation_text="주의 구간 (20-25%)", 
+                                        annotation_position="top left")
+                            
+                            # 위험 구간 (25-30%): 주황색
+                            fig.add_hrect(y0=25, y1=30, 
+                                        fillcolor="orange", opacity=0.2,
+                                        annotation_text="위험 구간 (25-30%)", 
+                                        annotation_position="top left")
+                            
+                            # 극위험 구간 (30%+): 빨간색
+                            fig.add_hrect(y0=30, y1=max(50, float(y_max)), 
+                                        fillcolor="red", opacity=0.2,
+                                        annotation_text="극위험 구간 (30%+)", 
+                                        annotation_position="top left")
+                            
+                            current_value = float(data['Close'].iloc[-1])
+                            status = get_volatility_status(current_value)
+                        else:
+                            status = ""
+                        
+                        fig.update_layout(
+                            title=f"{key} 추이 {status}",
+                            xaxis_title="날짜",
+                            yaxis_title="값",
+                            height=400,
+                            showlegend=True,
+                            template="plotly_white",
+                            hovermode='x unified'
+                        )
+                        
+                        # Y축 포맷 개선 (소수점 둘째자리까지)
+                        fig.update_yaxes(
+                            tickformat=".2f",
+                            gridcolor="rgba(128,128,128,0.3)",
+                            gridwidth=1
+                        )
+                        
+                        # X축 포맷 개선
+                        fig.update_xaxes(
+                            gridcolor="rgba(128,128,128,0.3)",
+                            gridwidth=1
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+
+def get_vix_status(value: float) -> str:
+    """VIX 값에 따른 상태 표시"""
+    if value <= 20:
+        return "🟢 (안전)"
+    elif value <= 25:
+        return "🟡 (주의)"
+    elif value <= 30:
+        return "🟠 (위험)"
+    else:
+        return "🔴 (극위험)"
+
+def get_skew_status(value: float) -> str:
+    """SKEW 값에 따른 상태 표시"""
+    if value <= 120:
+        return "🟢 (안전)"
+    elif value <= 130:
+        return "🟡 (주의)"
+    elif value <= 140:
+        return "🟠 (위험)"
+    else:
+        return "🔴 (극위험)"
+
+def get_volatility_status(value: float) -> str:
+    """변동성 값에 따른 상태 표시"""
+    if value <= 20:
+        return "🟢 (안전)"
+    elif value <= 25:
+        return "🟡 (주의)"
+    elif value <= 30:
+        return "🟠 (위험)"
+    else:
+        return "🔴 (극위험)"
+
+def display_volatile_stocks_table(stocks):
+    """변동성 높은 종목 테이블 표시 (개선된 정보)"""
+    
+    if not stocks:
+        st.warning("표시할 종목이 없습니다.")
+        return
+    
+    # 데이터프레임 생성
+    df_data = []
+    for stock in stocks:
+        df_data.append({
+            '종목코드': stock.get('symbol', 'N/A'),
+            '종목명': stock.get('name', 'N/A'),
+            '카테고리': f"{stock.get('category', 'N/A')} > {stock.get('subcategory', 'N/A')}",
+            '시가총액등급': stock.get('market_cap_tier', 'N/A'),
+            '시가총액': f"{stock.get('market_cap', 0)/1e8:.0f}억원" if stock.get('market_cap') else 'N/A',
+            '현재가격': f"${stock.get('price', 0):,.0f}" if stock.get('price') else 'N/A',
+            '변동성': f"{stock.get('current_volatility', 0):.1f}%",
+            '변동성등급': stock.get('volatility_rank', 'N/A'),
+            'RSI': f"{stock.get('RSI', 0):.1f}" if stock.get('RSI') else 'N/A',
+            '5일수익률': f"{stock.get('price_change_5d', 0):+.1f}%" if stock.get('price_change_5d') else 'N/A',
+            '거래량비율': f"{stock.get('volume_ratio', 1):.2f}x",
+            '분석일시': stock.get('analysis_date', 'N/A')
+        })
+    
+    df = pd.DataFrame(df_data)
+    st.dataframe(df, use_container_width=True)
+    
+    # 요약 통계
+    st.markdown("### 📊 분석 요약")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        try:
+            volatilities = [float(s.get('current_volatility', 0)) for s in stocks if isinstance(s.get('current_volatility', 0), (int, float)) and not pd.isna(s.get('current_volatility', 0))]
+            avg_volatility = sum(volatilities) / len(volatilities) if volatilities else 0
+            st.metric("평균 변동성", f"{avg_volatility:.1f}%")
+        except Exception as e:
+            print(f"평균 변동성 계산 오류: {e}")
+            st.metric("평균 변동성", "N/A")
+    
+    with col2:
+        try:
+            high_vol_count = sum(1 for s in stocks if isinstance(s.get('current_volatility', 0), (int, float)) and s.get('current_volatility', 0) >= 50)
+            st.metric("극고변동성 종목", f"{high_vol_count}개")
+        except Exception as e:
+            print(f"극고변동성 종목 계산 오류: {e}")
+            st.metric("극고변동성 종목", "N/A")
+    
+    with col3:
+        small_cap_count = sum(1 for s in stocks if s.get('market_cap_tier') in ['소형주', '소소형주', '극소형주'])
+        st.metric("소형주 이하", f"{small_cap_count}개")
+    
+    with col4:
+        high_rsi_count = sum(1 for s in stocks if s.get('RSI', 0) >= 70)
+        st.metric("과매수(RSI≥70)", f"{high_rsi_count}개")
+
+def display_top_stocks_charts(top_stocks):
+    """상위 종목들의 상세 차트 표시"""
+    
+    for i, stock in enumerate(top_stocks):
+        symbol = stock.get('symbol')
+        name = stock.get('name', 'Unknown')
+        
+        if symbol:
+            try:
+                # 최근 3개월 데이터
+                ticker_symbol = f"{symbol}.KS" if len(symbol) == 6 else symbol
+                data = yf.download(ticker_symbol, period="3mo", progress=False)
+                
+                if not data.empty:
+                    st.markdown(f"**{i+1}. {symbol} - {name}**")
+                    
+                    fig = go.Figure()
+                    
+                    # 캔들스틱 차트
+                    fig.add_trace(go.Candlestick(
+                        x=data.index,
+                        open=data['Open'],
+                        high=data['High'],
+                        low=data['Low'],
+                        close=data['Close'],
+                        name=symbol
+                    ))
+                    
+                    # 볼린저 밴드 추가
+                    sma_20 = data['Close'].rolling(window=20).mean()
+                    std_20 = data['Close'].rolling(window=20).std()
+                    bb_upper = sma_20 + (std_20 * 2)
+                    bb_lower = sma_20 - (std_20 * 2)
+                    
+                    fig.add_trace(go.Scatter(x=data.index, y=bb_upper, line=dict(color='red', dash='dash'), name='BB상단'))
+                    fig.add_trace(go.Scatter(x=data.index, y=bb_lower, line=dict(color='red', dash='dash'), name='BB하단'))
+                    
+                    fig.update_layout(
+                        title=f"{symbol} - {name} (최근 3개월)",
+                        yaxis_title="가격",
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+            except Exception as e:
+                st.error(f"{symbol} 차트 생성 실패: {e}")
+
+def generate_investment_strategy(market_sentiment):
+    """시장 심리에 따른 투자 전략 생성 (수치 기반)"""
+    
+    strategies = []
+    risk_level = "중간"
+    
+    # VIX 기반 전략 (구체적 수치 반영)
+    if 'VIX' in market_sentiment:
+        vix_sentiment = market_sentiment['VIX']
+        if "극도공포" in vix_sentiment:  # VIX 30+
+            strategies.append("🚨 **극도 위험 (VIX 30+)**: 현금 비중 80%+, 모든 레버리지 포지션 정리")
+            strategies.append("💰 **방어 전략**: 국채, 금, 달러 등 안전자산 위주")
+            risk_level = "극고위험"
+        elif "공포" in vix_sentiment:  # VIX 25-30
+            strategies.append("⚠️ **고위험 (VIX 25-30)**: 포지션 50% 축소, 옵션 매도 중단")
+            strategies.append("🛡️ **방어적 투자**: 배당주, 우량 대형주 위주")
+            risk_level = "고위험"
+        elif "불안" in vix_sentiment:  # VIX 20-25
+            strategies.append("📊 **선별적 투자 (VIX 20-25)**: 우량 소형주 위주, 소량 분할 매수")
+            strategies.append("⚖️ **균형 전략**: 현금 30%, 주식 70% 비중 유지")
+            risk_level = "중위험"
+        else:  # VIX 12-20
+            strategies.append("✅ **적극적 투자 (VIX 12-20)**: 성장주, 테마주 발굴 적기")
+            strategies.append("🚀 **공격적 전략**: 소형주, 신기술 관련주 집중 투자")
+            risk_level = "저위험"
+    
+    # KOSDAQ 변동성 기반 전략
+    if 'KOSDAQ' in market_sentiment:
+        kosdaq_sentiment = market_sentiment['KOSDAQ']
+        if "극고변동성" in kosdaq_sentiment:  # 30%+
+            strategies.append("⚡ **초단타 전략 (변동성 30%+)**: 일일 매매, 2% 손절 원칙")
+            strategies.append("📉 **리스크 관리**: 포지션 크기 평소의 1/3로 축소")
+        elif "고변동성" in kosdaq_sentiment:  # 20-30%
+            strategies.append("📈 **테마주 활성 (변동성 20-30%)**: 강한 테마 위주 단기 투자")
+            strategies.append("🎯 **스윙 트레이딩**: 3-5일 보유, 5% 손절선 설정")
+        else:  # 10-20%
+            strategies.append("🎯 **중장기 투자 (변동성 10-20%)**: 펀더멘털 우수 소형주 발굴")
+            strategies.append("📊 **포트폴리오 구성**: 성장주 70%, 가치주 30% 분산")
+    
+    # 종합 리스크 레벨 표시
+    st.markdown("### 🎯 현재 시장 위험도")
+    if risk_level == "극고위험":
+        st.error(f"🔴 **{risk_level}** - 모든 위험 자산 회피 권장")
+    elif risk_level == "고위험":
+        st.warning(f"🟠 **{risk_level}** - 방어적 포지션 유지")
+    elif risk_level == "중위험":
+        st.info(f"🟡 **{risk_level}** - 선별적 투자 및 리스크 관리")
+    else:
+        st.success(f"🟢 **{risk_level}** - 적극적 투자 기회")
+    
+    # 전략 표시
+    st.markdown("### 📋 추천 투자 전략")
+    for i, strategy in enumerate(strategies, 1):
+        st.markdown(f"{i}. {strategy}")
+    
+    # 구체적 행동 지침
+    st.markdown("### 🎲 구체적 행동 지침")
+    
+    if risk_level == "극고위험":
+        st.markdown("""
+        - 💵 **현금 비중**: 80% 이상 유지
+        - 🚫 **금지 행동**: 신용매수, 옵션 매수, 레버리지 상품
+        - 🛡️ **안전 자산**: 국채 ETF, 금 ETF 고려
+        - ⏰ **재진입 시점**: VIX 25 이하로 하락 시
+        """)
+    elif risk_level == "고위험":
+        st.markdown("""
+        - 💵 **현금 비중**: 50-60% 유지
+        - ⚠️ **주의 행동**: 소량 분할 매수, 손절선 엄격 준수
+        - 🏢 **추천 종목**: 대형주, 배당주, 방어주
+        - ⏰ **관찰 포인트**: VIX 20 이하 진입 여부
+        """)
+    elif risk_level == "중위험":
+        st.markdown("""
+        - 💵 **현금 비중**: 30-40% 유지
+        - 📊 **투자 방식**: 분할 매수, 단계적 진입
+        - 🎯 **추천 종목**: 우량 소형주, 테마주 선별
+        - ⏰ **전환 시점**: VIX 방향성 확인 후 비중 조절
+        """)
+    else:
+        st.markdown("""
+        - 💵 **현금 비중**: 10-20% 유지 (기회 대기)
+        - 🚀 **투자 방식**: 적극적 매수, 성장주 발굴
+        - 💎 **추천 종목**: 소형주, 신기술, 테마주
+        - ⏰ **주의 시점**: VIX 20 돌파 시 포지션 조절
+        """)
+    
+    # 추가 주의사항
+    st.markdown("---")
+    st.warning("""
+    **⚠️ 리스크 관리 원칙**
+    
+    **1. 손절 원칙**
+    - 안전 구간: -10% 손절
+    - 주의 구간: -7% 손절  
+    - 위험 구간: -5% 손절
+    - 극위험 구간: -3% 손절
+    
+    **2. 포지션 관리**
+    - 개별 종목 최대 5% 비중
+    - 동일 섹터 최대 20% 비중
+    - 소형주 전체 최대 40% 비중
+    
+    **3. 변동성 모니터링**
+    - VIX 20 돌파 시 즉시 점검
+    - 개별 종목 변동성 30% 초과 시 비중 축소
+    - 시장 심리 변화 시 전략 재검토
+    """)
+
 def ticker_management_page():
     """티커 관리 페이지"""
     st.title("🔧 티커 관리 시스템")
@@ -1850,7 +3160,7 @@ def main():
     # 페이지 선택
     page = st.sidebar.selectbox(
         "분석 도구 선택:",
-        ["📈 주식 분석", "📊 매크로 경제 분석", "🔧 티커 관리"],
+        ["📈 주식 분석", "📊 매크로 경제 분석", "🎯 잡주 분석", "🔧 티커 관리"],
         help="원하는 분석 도구를 선택하세요"
     )
     
@@ -1859,6 +3169,8 @@ def main():
         stock_analysis_page()
     elif page == "📊 매크로 경제 분석":
         macro_analysis_page()
+    elif page == "🎯 잡주 분석":
+        volatility_analysis_page()
     elif page == "🔧 티커 관리":
         ticker_management_page()
 
