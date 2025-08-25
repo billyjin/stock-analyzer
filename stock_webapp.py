@@ -792,6 +792,17 @@ def load_macro_data():
         # Raw_month_USD base 시트 (원본 값 데이터)
         base_data = pd.read_excel('macro_data_trimmed.xlsx', sheet_name='Raw_month_USD base')
         
+        # 숫자가 아닌 컬럼 제거 및 숫자 변환
+        def clean_numeric_data(df):
+            # 첫 번째 컬럼(날짜)을 제외하고 숫자 변환
+            for col in df.columns:
+                if col != df.columns[0]:  # 첫 번째 컬럼(날짜) 제외
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+        
+        scaled_data = clean_numeric_data(scaled_data)
+        base_data = clean_numeric_data(base_data)
+        
         # 인덱스를 날짜로 설정 (첫 번째 열이 날짜라고 가정)
         if scaled_data.columns[0] in ['Date', 'date', 'DATE']:
             scaled_data.set_index(scaled_data.columns[0], inplace=True)
@@ -962,27 +973,44 @@ def macro_analysis_page():
             # 통계 정보
             st.subheader("📊 기본 통계")
             
-            stats_data = filtered_data[selected_features].describe()
-            st.dataframe(
-                stats_data.round(4),
-                use_container_width=True,
-                height=300
-            )
+            try:
+                # 숫자 데이터로 변환
+                numeric_data = filtered_data[selected_features].apply(pd.to_numeric, errors='coerce')
+                stats_data = numeric_data.describe()
+                st.dataframe(
+                    stats_data.round(4),
+                    use_container_width=True,
+                    height=300
+                )
+            except Exception as e:
+                st.warning(f"⚠️ 통계 계산 오류: {str(e)}")
+                st.info("💡 데이터가 숫자 형식이 아닐 수 있습니다.")
             
             # 상관관계 매트릭스
             if len(selected_features) > 1:
                 st.subheader("🔄 상관관계")
-                corr_matrix = filtered_data[selected_features].corr()
-                
-                fig_corr = px.imshow(
-                    corr_matrix,
-                    text_auto=True,
-                    aspect="auto",
-                    color_continuous_scale="RdBu_r",
-                    title="상관관계 매트릭스"
-                )
-                fig_corr.update_layout(height=400)
-                st.plotly_chart(fig_corr, use_container_width=True)
+                try:
+                    # 데이터를 숫자 형태로 변환하고 NaN 제거
+                    numeric_data = filtered_data[selected_features].apply(pd.to_numeric, errors='coerce')
+                    numeric_data = numeric_data.dropna()
+                    
+                    if not numeric_data.empty and len(numeric_data) > 1:
+                        corr_matrix = numeric_data.corr()
+                        
+                        fig_corr = px.imshow(
+                            corr_matrix,
+                            text_auto=True,
+                            aspect="auto",
+                            color_continuous_scale="RdBu_r",
+                            title="상관관계 매트릭스"
+                        )
+                        fig_corr.update_layout(height=400)
+                        st.plotly_chart(fig_corr, use_container_width=True)
+                    else:
+                        st.warning("⚠️ 상관관계 계산을 위한 충분한 숫자 데이터가 없습니다.")
+                except Exception as e:
+                    st.warning(f"⚠️ 상관관계 계산 오류: {str(e)}")
+                    st.info("💡 일부 데이터가 숫자가 아닐 수 있습니다.")
         
         # 개별 지표 상세 분석
         if st.checkbox("📋 개별 지표 상세 분석", value=False):
@@ -1006,15 +1034,23 @@ def macro_analysis_page():
                         st.plotly_chart(individual_fig, use_container_width=True)
                     
                     # 기본 통계
-                    feature_stats = filtered_data[feature].describe()
-                    st.write(f"**{feature} 통계:**")
-                    stat_cols = st.columns(3)
-                    with stat_cols[0]:
-                        st.metric("평균", f"{feature_stats['mean']:.4f}")
-                    with stat_cols[1]:
-                        st.metric("표준편차", f"{feature_stats['std']:.4f}")
-                    with stat_cols[2]:
-                        st.metric("최신값", f"{filtered_data[feature].iloc[-1]:.4f}")
+                    try:
+                        numeric_feature_data = pd.to_numeric(filtered_data[feature], errors='coerce')
+                        feature_stats = numeric_feature_data.describe()
+                        st.write(f"**{feature} 통계:**")
+                        stat_cols = st.columns(3)
+                        with stat_cols[0]:
+                            st.metric("평균", f"{feature_stats['mean']:.4f}")
+                        with stat_cols[1]:
+                            st.metric("표준편차", f"{feature_stats['std']:.4f}")
+                        with stat_cols[2]:
+                            latest_value = numeric_feature_data.iloc[-1]
+                            if pd.notna(latest_value):
+                                st.metric("최신값", f"{latest_value:.4f}")
+                            else:
+                                st.metric("최신값", "N/A")
+                    except Exception as e:
+                        st.warning(f"⚠️ {feature} 통계 계산 오류: {str(e)}")
         
         # 데이터 테이블
         if st.checkbox("📊 원본 데이터 보기", value=False):
